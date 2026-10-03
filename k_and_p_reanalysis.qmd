@@ -1,0 +1,393 @@
+---
+title: "An Analysis of the Veteran Survival Dataset"
+format: html
+editor: visual
+toc: TRUE
+author: "Cameron-Scott Sommerville"
+echo: FALSE
+theme:
+  light: minty
+  dark: cyborg
+bibliography: refs.bib
+embed-resources: true
+---
+
+```{r, include=FALSE}
+library(tidyverse)
+library(survival)
+library(ggsurvfit)
+library(survminer)
+library(patchwork)
+```
+
+```{r}
+veteran_data_df <- survival::veteran
+set.seed(1234)
+```
+
+```{r}
+#| label: setup
+#| include: false
+
+theme_transparent <- function(text_colour = "#868e96",
+                              grid_colour = "#868e96",
+                              base_size = 11) {
+  theme_minimal(base_size = base_size) +
+    theme(
+      plot.background   = element_rect(fill = "transparent", colour = NA),
+      panel.background  = element_rect(fill = "transparent", colour = NA),
+      legend.background = element_rect(fill = "transparent", colour = NA),
+      legend.key        = element_rect(fill = "transparent", colour = NA),
+
+      panel.grid.major  = element_line(colour = grid_colour, linewidth = 0.3),
+      panel.grid.minor  = element_blank(),
+
+      text              = element_text(colour = text_colour),
+      axis.text         = element_text(colour = text_colour),
+      axis.title        = element_text(colour = text_colour),
+      legend.text       = element_text(colour = text_colour),
+      legend.title      = element_text(colour = text_colour)
+    )
+}
+
+knitr::opts_chunk$set(dev = "png", dev.args = list(bg = "transparent"))
+```
+Kalbfleisch & Prentice [-@prentice1980] produced a dataset from a longitudinal clinical study on military veterans with terminal lung cancer with treatments across two conditions: standard therapy versus test chemotherapy, with participant allocation randomised. The variables observed within this dataset are:
+
+* Treatment type
+* Cell type
+* Survival time
+* Status (censoring)
+* Karnofsky performance score (health index)
+* Months from diagnosis
+* Prior therapy
+
+# Packages Used
+
+This data has been obtained by way of the `survival` package created by Terry M. Therneau and Patricia M. Grambsch [-@survival-book].
+
+Other packages used throughout the course of this document are `tidyverse (v. 2.0.0)`, `ggsurvfit (v. 1.2.1)`, `survminer`, and `patchwork (v. 1.3.2)`.
+
+The primary research question regarding this dataset is, "does the novel chemotherapy treatment result in better survival outcomes than the standard therapy treatment"?
+
+# Visualising the Data
+
+First, let's look at what the dataset actually contains. Reading the data off a table is a very wearisome task, so let's translate it into a visual graph instead.
+
+```{r}
+#| label: fig-karno_time_status
+#| fig-cap: "A rough overview of the relationship between time and Karnofsky scoring. A lower score typically means worse health, higher scores mean better health. Points are colour-coded by status, either deceased or censored. Note, 'censored' does not mean 'alive', rather it means the researchers stopped observing and have no further information regarding status."
+ggplot(veteran_data_df, aes(
+  x = time,
+  y = karno,
+  colour = factor(status)
+)) +
+  geom_point() + 
+  scale_color_manual(values = c("0" = "#619CFF", "1" = "#F8766D"),
+                     labels = c("0" = "Censored", "1" = "Deceased")) +
+  labs(colour = "Participant Status",
+       x = "Survival Time (Days)",
+       y = "Karnofsky Score") +
+  theme_transparent()
+  
+```
+Immediately one can see a few things; the vast majority of participants were deceased by the time the study had concluded - this is not unusual for studies regarding terminal cancers. One can also see that the majority of participants had a Karnofsky score above 50, and that such a score threshold was almost unilateral across participants whose survival time exceeded 250 months, with the exception of a sole outlier.
+
+```{r}
+#| label: fig-karno-cells
+#| fig-cap: "Violin density plot of Karnofsky health index scores by cancer cell type. Wider portions denote higher density (i.e., more data points within that interval)."
+
+ggplot(veteran_data_df, aes(
+  x = karno,
+  y = celltype,
+  fill = celltype)) +
+    geom_violin() +
+  labs(x = "Karnofsky Score",
+       y = NULL,
+    fill = "Type of Cell",
+   ) +
+  theme_transparent()
+
+```
+Here one can see the distribution and density of Karnofsky scores by type of cancer cell. Adeno cells appear to have the widest distribution of Karnofsky scores, ranging from 0 to ~95 (death to near perfect performance), whilst "large" cancer cells appear to have the tightest distribution of ~30 to ~80 with the bulk of those scores hovering between 60-75.
+
+```{r}
+#| label: fig-time-cells
+#| fig-cap: "Dot plot comparing cell type against survival time (in days), colour coded by treatment condition, shape coded by patient status upon study end."
+
+ggplot(veteran_data_df, aes(
+  x = time,
+  y = celltype,
+  colour = factor(trt),
+  shape = factor(status))) +
+   geom_point() +
+  labs(colour = "Treatment Condition",
+       shape = "Status",
+       y = "Cell Type",
+       x = "Survival Time (Days)") +
+  theme_transparent()
+```
+Here we can see the distribution of points based on cell type and survival time, colour-coded by treatment condition. Visually, one can see there isn't much apparent difference between survival times across conditions within the top three cell types, with only squamous cells indicating any potentially significant difference in treatment outcome. This begs the question whether or not treatment is actually effectuating that difference, or whether this is a natural consequence of the cancer cell type itself.
+
+```{r}
+#| label: fig-surv-diag
+#| fig-cap: "Comparison of time from diagnosis (in months) against recorded survival time (in days). Colour-coded by cell type and shape coded by patient status upon study end."
+
+ggplot(veteran_data_df, aes(
+  x = diagtime,
+  y = time,
+  colour = celltype,
+  shape = factor(status))) +
+    geom_point() +
+  labs(x = "Time from Diagnosis (Months)",
+       y = "Survival Time (Days)",
+   ) +
+  theme_transparent()
+```
+The final thing we're visualising here is the time from initial cancer diagnosis against survival time. At a quick glance, most points are centred around the bottom left corner of the graph, indicating both a low time from diagnosis and low survival time. Each point is colour-coded according to the type of cancer the individual has, with small-cell and adenocarcinoma cells dominating casualty-counts in the bottom left quadrant of the graph. By comparison, squamous - and to some extent large cell cancers - seem to have a slightly more diffuse distribution, with the two longest-surviving patients both having squamous-cell type lung cancer. 
+
+This makes sense, existing literature states that adenocarcinoma cells (e.g., glandular cells that are typically involved in the production of mucus substances) are often only detected in advanced stages typically resulting in shorter survival times [@kanchsharma2026].
+
+# Statistical Analyses
+
+## Assumptions
+
+The analysis in this document operates off of the following assumptions:
+
+- Censored patients have the same survival prospects as non-censored patients (i.e., censoring is not taking place in anticipation of the event)
+- Survival probabilities remain the same across the span of the study (e.g., no change in quality of care)
+- Event timing remains precise, not lumped together in wide intervals
+- All survival observations remain independent (e.g., the survival of patient A does not impact the survival of patient B)
+- All events (deaths) come from the same standard cause, and not from a competing risk (e.g., all deaths herein are from cancer, not extraneous causes like car crashes, falls, etcetera)
+
+As there is no way to verify this beyond trusting the initial researchers, we shall trust that these assumptions are met.
+
+## Naive Kaplan-Meier Plot
+
+The first thing one can do to address the question of treatment effects on survival time outcomes is to create a Kaplan-Meier plot comparing treatment condition to survival outcomes.
+
+```{r}
+#| label: fig-all-surv
+#| fig-cap: "The probability of survival (Y-axis) against the total time in days (X-axis) for the entire cohort across all cell types and all treatment conditions. Grey area surrounding the KM line denotes the confidence interval. Risk table at the bottom shows how many participants are still being followed and are either free of the event, or have been censored, or have had the event occur. Cross marks on the line denote cases of censoring. N = 137"
+naive_fit_KM <- survfit2(Surv(time, status) ~ 1, data = veteran_data_df) |> # note, object class data (e.g., cell type) cannot be used as Y-axis, only binary (e.g., status) can. likewise, only continual data (e.g., time) can be used on X-axis
+  ggsurvfit() +
+  labs(
+    x = "Days",
+    y = "Probability of survival"
+  ) +
+  theme_transparent() +
+  add_confidence_interval() +
+  add_risktable() +
+  add_censor_mark() +
+  scale_ggsurvfit()
+naive_fit_KM
+```
+
+As time goes on, the probability of survival decreases across the entirety of the cohort (e.g., across all cell types). By day 250, the vast majority of patients (n = 111) have either passed away or have been censored - in other words, ~81% of the cohort has either died or has been censored by day 250, survival beyond this point is highly unlikely, with the total number of individuals left numbering just 18 people.
+
+### Treatment-type differences
+
+We can plot the difference in survival between treatment conditions like so.
+
+```{r}
+#| label: fig-trt-KM
+#| fig-cap: "The probability of survival (Y-axis) against the total time in days (X-axis) for the entire cohort across all cell types, segregated by treatment condition (1 = normal chemotherapy, 2 = experimental). Coloured area surrounding the KM line denotes the confidence interval. Risk table at the bottom shows how many participants are still being followed and are either free of the event, or have been censored, or have had the event occur. Cross marks on the line denote cases of censoring. Total N = 137, condition 1 N = 69, condition 2 N = 68."
+trt_diff_KM <- survfit2(Surv(time, status) ~ trt, data = veteran_data_df) |>
+  ggsurvfit() +
+  labs(
+    x = "Days",
+    y = "Probability of survival"
+  ) +
+  add_confidence_interval() +
+  add_censor_mark() +
+  add_risktable() +
+  add_pvalue() +
+  scale_ggsurvfit()
+trt_diff_KM
+```
+The plot above shows that the survival curves for each condition appear strikingly similar, and we also see that the difference between the two curves is not statistically significant (*p*>0.9). This plot of course does not look at the differences between cell types, and thus does not take into account the possibility that the treatment affects the physiologies of each type of cancer differently.
+
+We can run a final log-rank test using the treatment conditions alone to double-check the significance result.
+
+```{r}
+#| echo: TRUE
+log_rank_trtdiff <- survdiff(Surv(time, status) ~ trt, data = veteran_data_df)
+log_rank_trtdiff
+```
+As one can see, there is still no significant difference between naive treatment condition alone. With that, we can move onto the impact cell type may have on survival probability.
+
+### Cell-type differences
+
+There are four distinct cancer cell types in this dataset:
+
+1. Squamous cells
+2. Small cells
+3. Adenocarcinoma cells
+4. Large cells
+
+Below one can see a plot of the differences in survival probability across both treatment conditions, segregated by cell type.
+
+```{r}
+cell_diff_KM <- survfit2(Surv(time, status) ~ celltype, data = veteran_data_df) |>
+  ggsurvfit() +
+  labs(
+    x = "Days",
+    y = "Probability of survival"
+  ) +
+  add_confidence_interval() +
+  add_censor_mark() +
+  add_risktable() +
+  add_pvalue() +
+  scale_ggsurvfit()
+cell_diff_KM
+```
+The above table is quite messy, so let's facet the data into separate plots per cell type.
+```{r}
+cell_diff_facet_KM <- survfit2(Surv(time, status) ~ celltype, data = veteran_data_df) |>
+  ggsurvfit() +
+  labs(
+    x = "Days",
+    y = "Probability of survival"
+  ) +
+  add_confidence_interval() +
+  add_censor_mark() +
+  facet_wrap(~strata) +
+  scale_ggsurvfit() +
+  add_pvalue()
+cell_diff_facet_KM
+```
+As one can see, there is a striking visual difference between cell types in regard to survival probability. For example, patients that have squamous cell cancer seem to unilaterally have better survival probability over time compared to patients with adenocarcinoma. But is the difference statistically significant? The first plot reports *p* <0.001, which would be highly significant, but let's run a log-rank test separately.
+
+
+```{r log_rank_cell_diff}
+log_rank_cell_celldiff <- survdiff(Surv(time, status) ~ celltype, data = veteran_data_df)
+log_rank_cell_celldiff
+```
+
+The log-rank test actually returns *p* = 1e-05 (e.g., *p* = 0.00001). The result therefore is highly statistically significant. However, is the sample size truly large enough to provide enough statistical power to trust this significance result? We can use a Cox proportional hazards model to infer whether or not this data can provide conclusive evidence regarding power - if there is enough power, then the width of confidence intervals should be narrow.
+
+We will use squamous carcinoma data as the reference point.
+
+```{r}
+# cox model to look at CI width
+# wide intervals -> unable to distinguish trivial from large effect
+cell_diff_fit <- coxph(Surv(time, status) ~ celltype, data = veteran_data_df)
+summary(cell_diff_fit)
+```
+- Small cell carcinoma: HR 2.722 (95% CI 1.656 - 4.473). We can conclusively state that there is an effect, and that an individual with small cell carcinoma is more at risk than an individual with squamous cell carcinoma, but the confidence interval is still quite imprecise. Our point estimate (~2.7) would imply nearly triple the instantaneous risk, but the true number could be lower (~1.6x) or higher (~4.8x).
+
+- Adenocarcinoma: HR 3.151 (95% CI 1.775 - 5.594). Similarly to small cell carcinoma, there is an effect, but an imprecise one. The point estimate suggests triple the risk compared to the reference, but it could be as low as nearly double the risk, or as high as nearly six times the risk.
+
+- Large cell carcinoma: HR 1.2588 (95% CI 0.731 - 2.168). Here, the data is inconclusive. The point estimate would imply there is almost no difference between large cell carcinoma and squamous carcinoma (which fits what the Kaplan-Meier plots suggest), however the true value could be lower (0.7x the risk), or even higher at around double the risk.
+
+## Differences by Treatment and Cell Type
+
+```{r}
+treatment_1 <- veteran_data_df[veteran_data_df$trt == 1, ]
+  treatment_1 <- treatment_1 %>% mutate(t_months = time * 0.03285421) # conversion from days to months
+# necessary due to crowding on x-axis
+  
+treatment_1 <- treatment_1 %>%
+    add_count(celltype) %>% # adds n = i for col
+  mutate(celltype_n = fct_inorder(paste0(celltype, " (n = ", n, ")")))
+  
+treatment_2 <- veteran_data_df[veteran_data_df$trt == 2, ]
+  treatment_2 <- treatment_2 %>% mutate(t_months = time * 0.03285421)
+  
+treatment_2 <- treatment_2 %>%
+     add_count(celltype) %>%
+  mutate(celltype_n = fct_inorder(paste0(celltype, " (n = ", n, ")")))
+```
+
+```{r trt1_plot, echo=FALSE, message=FALSE}
+
+trt1_plot <- survfit2(Surv(t_months, status) ~ celltype_n, data = treatment_1) |>
+  ggsurvfit() +
+  labs(
+    x = "Months",
+    y = "Probability of survival"
+  ) +
+  add_confidence_interval() +
+  add_censor_mark() +
+  add_pvalue() +
+  facet_wrap(~strata) +
+  theme(legend.position = "none") +
+  scale_ggsurvfit() +
+  scale_x_continuous(breaks = seq(from = 0, to = 32, by = 8)) +
+  coord_cartesian(xlim = c(0, 32)) +
+  ggtitle('Treatment 1')
+```
+
+```{r trt2_plot, echo=FALSE, message=FALSE}
+
+trt2_plot <- survfit2(Surv(t_months, status) ~ celltype_n, data = treatment_2) |>
+  ggsurvfit() +
+  labs(
+    x = "Months",
+    y = "Probability of survival"
+  ) +
+  add_confidence_interval() +
+  add_censor_mark() +
+  add_pvalue() +
+  facet_wrap(~strata) +
+  theme(legend.position = "none") +
+  scale_ggsurvfit() +
+  scale_x_continuous(breaks = seq(from = 0, to = 32, by = 8)) +
+  coord_cartesian(xlim = c(0, 32)) +
+  ggtitle('Treatment 2')
+```
+
+```{r echo=FALSE, message=FALSE}
+#| label: fig-trt-surv
+#| fig-cap: "Comparison of survival probability across time between both treatment conditions. Treatment 1 cohort (n = 69) on the left, Treatment 2 cohort (n = 68) on the right."
+trt1_plot + trt2_plot
+```
+Again, one can see there is a statistically significant difference between the cell types in regard to survival probability over time (as seen with the report p-values at the bottom of each graph) albeit with quite wide confidence intervals at times, but the information of interest is whether or not there is a significant difference within cell types by treatment condition (e.g., does treatment 1 result in better or worse outcomes for adenocarcinoma compared to treatment 2?).
+
+For this, we can run a Cox regression model, and then create a forest plot using the results.
+
+```{r simple interactions}
+cox_results <- veteran_data_df |>
+  group_by(celltype) |>
+  group_modify(~ broom::tidy(
+              coxph(Surv(time, status) ~ trt, data = .x),
+               exponentiate = TRUE, # converts log hazards into regular hazard ratios
+               conf.int = TRUE))
+
+ggplot(cox_results, aes(x = estimate,
+                        y = celltype,
+                        colour = celltype)) +
+  geom_vline(xintercept = 1, linetype = "dashed", colour = "grey50") +
+  geom_pointrange(aes(xmin = conf.low, xmax = conf.high), size = 0.6) +
+  scale_x_log10() +
+  labs(
+    x = "Hazard ratio (log scale, 95% CI)",
+    y = NULL,
+    title = "Effect of treatment on survival by cell type",
+    subtitle = "HR < 1 favours Treatment 2 (Experimental Therapy); HR > 1 favours Treatment 1 \n (Traditional Chemotherapy)"
+  ) +
+  theme_transparent() +
+  theme(legend.position = "none")
+
+# [defunct] 1 = squamous, 2 = smallcell, 3 = adeno, 4 = large
+```
+At first glance, one might want to infer that squamous cell carcinoma benefits from the experimental therapy whilst the other cancers do not. However, the long horizontal lines stretching out from the coloured hazard point denote the confidence intervals, which all cross the median (1) for the HR. This means the true value for each cell type may lie in the "no effect" point, and so we are forced to conclude that the data itself is inconclusive regarding the question of treatment efficacy on specific cell-types. 
+
+This isn't entirely unexpected, the sample sizes per cell type group are quite small (n = 27 on the low end, n = 48 on the high end) which is only made smaller once dividing along treatment condition lines. This typically means that any confidence interval produced will be much wider, as the data produces low predictive power.
+
+# Conclusion
+
+We cannot conclusively state that the novel chemotherapy treatment significantly influences survival probability, either across the entire cohort or in specific cell types. There is some evidence to suggest that squamous cell carcinoma may benefit from the novel treatment, but said evidence is inconclusive with existing confidence intervals.
+
+# Citations
+:::{#refs}
+:::
+
+# IDE information for reproducibility
+All analysis was conducted in RStudio 2026.08.2+200 "Yellow Yarrow" Release (1b2c764d96f951e5d3e80c05e095a53bdcde7c78, 2026-08-26) for windows
+Mozilla/5.0 (Windows NT 10.0; Win64; x64) 
+AppleWebKit/537.36 (KHTML, like Gecko) 
+RStudio/2026.08.2+200 
+Chrome/148.0.7778.280 
+Electron/42.7.1 
+Safari/537.36, Quarto 1.9.38
