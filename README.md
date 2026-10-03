@@ -41,7 +41,7 @@ No parametric survival models are used.
 4. Render the report:
 
    ```bash
-   quarto render <name-of-your-file>.qmd
+   quarto render k_and_p_reanalysis.qmd
    ```
 
    or click **Render** in RStudio.
